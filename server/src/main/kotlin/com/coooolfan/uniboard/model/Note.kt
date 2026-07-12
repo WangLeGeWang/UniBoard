@@ -15,5 +15,7 @@ interface Note {
 
     val content: String
 
+    val type: NoteType
+
     val password: String?
 }

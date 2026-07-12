@@ -13,6 +13,8 @@ input NoteInsert {
 
     content
 
+    type
+
     password
 }
 

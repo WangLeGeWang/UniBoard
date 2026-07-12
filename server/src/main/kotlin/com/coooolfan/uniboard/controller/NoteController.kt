@@ -112,6 +112,7 @@ class NoteController(private val service: NoteService) {
         private val DEFAULT_NOTE = newFetcher(Note::class).by {
             title()
             content()
+            type()
         }
     }
 }

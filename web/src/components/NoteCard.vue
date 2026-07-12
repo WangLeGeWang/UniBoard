@@ -1,9 +1,22 @@
 <script setup lang="ts">
-import { inject, onMounted, ref, watch, computed } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import Password from 'primevue/password'
 import Vditor from 'vditor'
+import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
+import { highlightSelectionMatches, searchKeymap } from '@codemirror/search'
+import { EditorState } from '@codemirror/state'
+import {
+    drawSelection,
+    dropCursor,
+    EditorView,
+    highlightActiveLine,
+    highlightActiveLineGutter,
+    highlightSpecialChars,
+    keymap,
+    lineNumbers
+} from '@codemirror/view'
 import ConfirmPopup from 'primevue/confirmpopup'
 import Tree, { type TreeSelectionKeys } from 'primevue/tree'
 import 'vditor/dist/index.css'
@@ -12,6 +25,7 @@ import type { TreeNode } from 'primevue/treenode'
 import { useConfirm } from 'primevue/useconfirm'
 import { api } from '@/ApiInstance'
 import type { NoteDto } from '@/__generated/model/dto'
+import type { NoteType } from '@/__generated/model/enums'
 import { BeautyLocalTime } from '@/utils/BeautyDate'
 import { useClipboard } from '@/composables/useClipboard'
 import { useToast } from 'primevue/usetoast'
@@ -21,15 +35,47 @@ const { copyToClipboard } = useClipboard()
 const editNote = ref<NoteDto['NoteController/DEFAULT_NOTE']>({
     id: -1,
     title: '',
-    content: ''
+    content: '',
+    type: 'MARKDOWN' as NoteType
 })
 const notePasswordInput = ref('')
 const editNoteLoading = ref(false)
 const passwordDialogVisible = ref(false)
 const vditor = ref<Vditor>()
 const vditorLoading = ref(true)
+const plainEditorElement = ref<HTMLDivElement>()
+let plainEditor: EditorView | undefined
+let syncingPlainEditor = false
 const selectedKey = ref<TreeSelectionKeys>([])
 const treeNode = ref<TreeNode[]>([])
+
+const plainEditorTheme = EditorView.theme({
+    '&': {
+        height: '500px',
+        border: '1px solid #d1d5db',
+        backgroundColor: 'transparent',
+        color: 'inherit',
+        fontSize: '14px'
+    },
+    '.cm-scroller': {
+        overflow: 'auto',
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
+    },
+    '.cm-content': {
+        padding: '12px 0'
+    },
+    '.cm-gutters': {
+        borderRight: '1px solid #d1d5db',
+        backgroundColor: 'transparent',
+        color: '#6b7280'
+    },
+    '.cm-activeLine, .cm-activeLineGutter': {
+        backgroundColor: 'rgba(128, 128, 128, 0.1)'
+    },
+    '&.cm-focused': {
+        outline: '1px solid currentColor'
+    }
+})
 
 // 使用计算属性处理按钮图标逻辑
 const uploadButtonIcon = computed(() => {
@@ -51,6 +97,33 @@ const notePlainTextLink = computed(() => {
 
 onMounted(() => {
     refreshTree()
+    plainEditor = new EditorView({
+        doc: editNote.value.content,
+        parent: plainEditorElement.value,
+        extensions: [
+            lineNumbers(),
+            highlightActiveLineGutter(),
+            highlightSpecialChars(),
+            history(),
+            drawSelection(),
+            dropCursor(),
+            EditorState.allowMultipleSelections.of(true),
+            highlightActiveLine(),
+            highlightSelectionMatches(),
+            keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap]),
+            plainEditorTheme,
+            EditorView.updateListener.of((update) => {
+                if (!update.docChanged || syncingPlainEditor) return
+
+                const content = update.state.doc.toString()
+                editNote.value = {
+                    ...editNote.value,
+                    content
+                }
+                uploadEvent(content)
+            })
+        ]
+    })
     vditor.value = new Vditor('vditor', {
         placeholder:
             'UniBoard 使用 Vditor 作为 MarkDown 编辑器。 \nVditor 是一款浏览器端的 Markdown 编辑器，支持所见即所得（富文本）、即时渲染（类似 Typora ）和分屏预览模式',
@@ -94,7 +167,7 @@ onMounted(() => {
         preview: {
             theme: {
                 current: 'dark',
-                path: ""
+                path: ''
             }
         }
     })
@@ -102,6 +175,24 @@ onMounted(() => {
         setTheme()
     })
 })
+
+onBeforeUnmount(() => {
+    plainEditor?.destroy()
+})
+
+function setPlainEditorValue(content: string) {
+    if (!plainEditor || plainEditor.state.doc.toString() === content) return
+
+    syncingPlainEditor = true
+    plainEditor.dispatch({
+        changes: {
+            from: 0,
+            to: plainEditor.state.doc.length,
+            insert: content
+        }
+    })
+    syncingPlainEditor = false
+}
 
 async function setTheme() {
     if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
@@ -141,15 +232,22 @@ watch(selectedKey, async (newVal) => {
         id: selectedId
     })
     notePasswordInput.value = ''
-    vditor.value?.setValue(editNote.value?.content ?? '')
+    if (editNote.value.type === 'MARKDOWN') {
+        vditor.value?.setValue(editNote.value.content ?? '')
+    } else {
+        setPlainEditorValue(editNote.value.content)
+    }
     editNoteLoading.value = false
 })
 async function uploadEvent(value?: string) {
     if (value === undefined || value === null) {
-        value = vditor.value?.getValue() ?? ''
+        value =
+            editNote.value.type === 'PLAIN_TEXT'
+                ? editNote.value.content
+                : (vditor.value?.getValue() ?? '')
     }
-    // 空值不上传
-    if (value === undefined || value.trim().length === 0) return
+    // 真正的空值不上传，纯文本中的空格和换行需要原样保留
+    if (value === undefined || value.length === 0) return
 
     let noteTitle = editNote.value.title
     if (noteTitle.trim().length === 0) {
@@ -161,7 +259,8 @@ async function uploadEvent(value?: string) {
         const resp = await api.noteController.insertNote({
             body: {
                 content: value,
-                title: noteTitle
+                title: noteTitle,
+                type: editNote.value.type
             }
         })
         editNoteLoading.value = false
@@ -194,7 +293,12 @@ async function uploadEvent(value?: string) {
 function getPasswordPayload(): string | undefined {
     const password = notePasswordInput.value.trim()
     if (password.length > 0 && password.length <= 8) {
-        toast.add({ severity: 'error', summary: '密码太短', detail: '笔记分享密码长度必须大于 8。', life: 3000 })
+        toast.add({
+            severity: 'error',
+            summary: '密码太短',
+            detail: '笔记分享密码长度必须大于 8。',
+            life: 3000
+        })
         return undefined
     }
     if (password.length > 8) return password
@@ -239,7 +343,11 @@ async function savePasswordConfig() {
 async function copyPlainTextLink() {
     if (notePlainTextLink.value.length === 0) return
 
-    await copyToClipboard(notePlainTextLink.value, '笔记纯文本直链已复制到剪贴板', '笔记纯文本直链复制失败')
+    await copyToClipboard(
+        notePlainTextLink.value,
+        '笔记纯文本直链已复制到剪贴板',
+        '笔记纯文本直链复制失败'
+    )
 }
 
 async function deleteHandler(index: number) {
@@ -249,10 +357,12 @@ async function deleteHandler(index: number) {
     editNote.value = {
         id: -1,
         title: '',
-        content: ''
+        content: '',
+        type: 'MARKDOWN'
     }
     notePasswordInput.value = ''
     vditor.value?.setValue('')
+    setPlainEditorValue('')
     refreshTree()
 }
 
@@ -280,35 +390,44 @@ async function newNote() {
     editNote.value = {
         id: -1,
         title: '',
-        content: ''
+        content: '',
+        type: 'MARKDOWN'
     }
     notePasswordInput.value = ''
     vditor.value?.setValue('')
+    setPlainEditorValue('')
 }
 </script>
 <template>
     <ConfirmPopup></ConfirmPopup>
-    <Dialog v-model:visible="passwordDialogVisible" modal header="分享密码" :style="{ width: '28rem' }">
+    <Dialog
+        v-model:visible="passwordDialogVisible"
+        modal
+        header="分享密码"
+        :style="{ width: '28rem' }"
+    >
         <div class="flex flex-col gap-4">
             <p class="text-sm leading-6 text-neutral-500">
-                设置长度大于 8 的密码后，匿名用户可通过 <span class="font-mono">/api/note/{{ editNote.id }}?pw=...</span> 获取纯文本内容。
+                设置长度大于 8 的密码后，匿名用户可通过
+                <span class="font-mono">/api/note/{{ editNote.id }}?pw=...</span> 获取纯文本内容。
             </p>
             <Password
                 v-model="notePasswordInput"
                 :feedback="false"
                 placeholder="留空保存为私有"
                 toggleMask
-                fluid />
+                fluid
+            />
             <div v-if="notePlainTextLink" class="rounded-xl bg-neutral-100 p-3 dark:bg-neutral-800">
                 <p class="mb-2 text-xs text-neutral-500">纯文本直链</p>
                 <div class="flex items-center gap-2">
-                    <span class="min-w-0 flex-1 truncate font-mono text-sm">{{ notePlainTextLink }}</span>
+                    <span class="min-w-0 flex-1 truncate font-mono text-sm">{{
+                        notePlainTextLink
+                    }}</span>
                     <Button class="shrink-0" icon="pi pi-copy" text @click="copyPlainTextLink" />
                 </div>
             </div>
-            <p class="text-xs text-neutral-400">
-                留空保存会清空分享密码，并将笔记设为私有。
-            </p>
+            <p class="text-xs text-neutral-400">留空保存会清空分享密码，并将笔记设为私有。</p>
         </div>
         <template #footer>
             <Button label="取消" text severity="secondary" @click="passwordDialogVisible = false" />
@@ -318,26 +437,62 @@ async function newNote() {
     <div class="flex min-h-[74vh] items-start justify-start transition-all duration-300">
         <div class="flex h-4/5 w-80 flex-col">
             <p v-show="treeNode.length === 0">试着在笔记内容随便输入些什么</p>
-            <Tree v-show="treeNode.length > 0" :value="treeNode" v-model:selectionKeys="selectedKey" selectionMode="single" :pt="{ nodeToggleButton: 'hidden!' }" />
+            <Tree
+                v-show="treeNode.length > 0"
+                :value="treeNode"
+                v-model:selectionKeys="selectedKey"
+                selectionMode="single"
+                :pt="{ nodeToggleButton: 'hidden!' }"
+            />
         </div>
         <div class="w-full">
             <div class="flex items-center justify-between">
                 <input
                     class="ml-1 w-4/5 border-b-[1px] text-xl font-bold outline-hidden focus:border-black focus:outline-hidden"
-                    v-model="editNote.title" />
-                <div>
+                    v-model="editNote.title"
+                />
+                <div class="flex items-center">
+                    <select
+                        v-model="editNote.type"
+                        :disabled="editNote.id !== -1"
+                        aria-label="文档类型"
+                        class="mr-2 h-10 border-b border-gray-300 bg-transparent px-1 text-sm outline-hidden disabled:opacity-60"
+                    >
+                        <option value="MARKDOWN">Markdown</option>
+                        <option value="PLAIN_TEXT">纯文件</option>
+                    </select>
                     <Button class="h-10 w-8" :icon="uploadButtonIcon" text @click="uploadEvent()" />
-                    <Button class="h-10 w-8" v-show="editNote.id !== -1" :icon="'pi pi-lock'" text @click="passwordDialogVisible = true" />
-                    <Button class="h-10 w-8" v-show="editNote.id !== -1" severity="danger" :icon="'pi pi-trash'" text
-                        @click="confirmDelete($event, editNote.id)" />
+                    <Button
+                        class="h-10 w-8"
+                        v-show="editNote.id !== -1"
+                        :icon="'pi pi-lock'"
+                        text
+                        @click="passwordDialogVisible = true"
+                    />
+                    <Button
+                        class="h-10 w-8"
+                        v-show="editNote.id !== -1"
+                        severity="danger"
+                        :icon="'pi pi-trash'"
+                        text
+                        @click="confirmDelete($event, editNote.id)"
+                    />
                     <Button :icon="'pi pi-plus'" text class="mr-4 ml-auto" @click="newNote" />
                 </div>
             </div>
-            <div v-show="vditorLoading" class="flex flex-col items-center justify-center pt-8">
+            <div
+                v-show="vditorLoading && editNote.type === 'MARKDOWN'"
+                class="flex flex-col items-center justify-center pt-8"
+            >
                 <ProgressSpinner />
                 <p class="mt-8">等待编辑器组件加载……</p>
             </div>
-            <div v-show="!vditorLoading" id="vditor"></div>
+            <div v-show="!vditorLoading && editNote.type === 'MARKDOWN'" id="vditor"></div>
+            <div
+                v-show="editNote.type === 'PLAIN_TEXT'"
+                ref="plainEditorElement"
+                aria-label="纯文本内容"
+            />
         </div>
     </div>
     <Button @click="closeDialog" label="关闭" />
