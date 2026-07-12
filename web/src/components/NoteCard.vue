@@ -51,6 +51,10 @@ const treeNode = ref<TreeNode[]>([])
 
 const plainEditorTheme = EditorView.theme({
     '&': {
+        minWidth: '0',
+        maxWidth: '100%',
+        overflow: 'hidden',
+        boxSizing: 'border-box',
         height: '500px',
         border: '1px solid #d1d5db',
         backgroundColor: 'transparent',
@@ -58,6 +62,9 @@ const plainEditorTheme = EditorView.theme({
         fontSize: '14px'
     },
     '.cm-scroller': {
+        minWidth: '0',
+        maxWidth: '100%',
+        width: '100%',
         overflow: 'auto',
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
     },
@@ -434,8 +441,10 @@ async function newNote() {
             <Button label="保存" :loading="editNoteLoading" @click="savePasswordConfig" />
         </template>
     </Dialog>
-    <div class="flex min-h-[74vh] items-start justify-start transition-all duration-300">
-        <div class="flex h-4/5 w-80 flex-col">
+    <div
+        class="flex min-h-[74vh] w-full min-w-0 items-start justify-start transition-all duration-300"
+    >
+        <div class="flex h-4/5 w-80 shrink-0 flex-col">
             <p v-show="treeNode.length === 0">试着在笔记内容随便输入些什么</p>
             <Tree
                 v-show="treeNode.length > 0"
@@ -445,8 +454,8 @@ async function newNote() {
                 :pt="{ nodeToggleButton: 'hidden!' }"
             />
         </div>
-        <div class="w-full">
-            <div class="flex items-center justify-between">
+        <div class="min-w-0 flex-1">
+            <div class="flex min-w-0 items-center justify-between">
                 <input
                     class="ml-1 w-4/5 border-b-[1px] text-xl font-bold outline-hidden focus:border-black focus:outline-hidden"
                     v-model="editNote.title"
