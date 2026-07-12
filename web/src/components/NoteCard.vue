@@ -5,8 +5,10 @@ import Dialog from 'primevue/dialog'
 import Password from 'primevue/password'
 import Vditor from 'vditor'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
+import { yaml } from '@codemirror/lang-yaml'
+import { defaultHighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search'
-import { EditorState } from '@codemirror/state'
+import { Compartment, EditorState } from '@codemirror/state'
 import {
     drawSelection,
     dropCursor,
@@ -46,6 +48,7 @@ const vditorLoading = ref(true)
 const plainEditorElement = ref<HTMLDivElement>()
 let plainEditor: EditorView | undefined
 let syncingPlainEditor = false
+const plainLanguage = new Compartment()
 const selectedKey = ref<TreeSelectionKeys>([])
 const treeNode = ref<TreeNode[]>([])
 
@@ -118,6 +121,8 @@ onMounted(() => {
             highlightActiveLine(),
             highlightSelectionMatches(),
             keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap]),
+            plainLanguage.of(getPlainLanguage(editNote.value.title)),
+            syntaxHighlighting(defaultHighlightStyle),
             plainEditorTheme,
             EditorView.updateListener.of((update) => {
                 if (!update.docChanged || syncingPlainEditor) return
@@ -182,6 +187,19 @@ onMounted(() => {
         setTheme()
     })
 })
+
+watch(
+    () => editNote.value.title,
+    (title) => {
+        plainEditor?.dispatch({
+            effects: plainLanguage.reconfigure(getPlainLanguage(title))
+        })
+    }
+)
+
+function getPlainLanguage(title: string) {
+    return /\.ya?ml$/i.test(title.trim()) ? yaml() : []
+}
 
 onBeforeUnmount(() => {
     plainEditor?.destroy()
